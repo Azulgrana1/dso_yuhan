@@ -279,3 +279,13 @@ Version 3 (GPLv3).
 For commercial purposes, we also offer a professional version, see
 [http://vision.in.tum.de/dso](http://vision.in.tum.de/dso) for
 details.
+
+### Test script usage
+Test dso:
+	bash test_dso.sh sequence_name
+
+Show result:
+- Original DSO
+	bash show_result seq_name viewpose_g2o
+- After g2o optimization
+	bash show_result seq_name viewpose_g2o_after_viewer
