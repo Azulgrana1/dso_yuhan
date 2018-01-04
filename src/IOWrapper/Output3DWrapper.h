@@ -132,7 +132,6 @@ public:
 
 
 
-
         /* Usage:
          * Called after each new Keyframe is inserted & optimized, with all keyframes that were part of the active window during
          * that optimization in [frames] (with final=false). Use to access the new frame pose and points.

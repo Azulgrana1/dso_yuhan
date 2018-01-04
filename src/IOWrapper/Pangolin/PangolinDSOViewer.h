@@ -29,6 +29,7 @@
 #include "IOWrapper/Output3DWrapper.h"
 #include <map>
 #include <deque>
+#include <string>
 
 
 namespace dso
@@ -51,6 +52,16 @@ struct GraphConnection
 	int fwdMarg, bwdMarg, fwdAct, bwdAct;
 };
 
+struct ObjCamConnection
+{
+	int objID, frameID;
+	inline ObjCamConnection(int obj, int frame)
+	{
+		this->objID = obj;
+		this->frameID = frame;
+	}
+};
+
 
 class PangolinDSOViewer : public Output3DWrapper
 {
@@ -67,7 +78,8 @@ public:
 
 
 	// ==================== Output3DWrapper Functionality ======================
-    virtual void publishGraph(const std::map<uint64_t,Eigen::Vector2i> &connectivity);
+    virtual void publishGraph(const std::map<uint64_t,Eigen::Vector2i, std::less<uint64_t>, Eigen::aligned_allocator<std::pair<uint64_t, Eigen::Vector2i> > > &connectivity);
+    //virtual void publishGraph(const std::map<uint64_t,Eigen::Vector2i> &connectivity);
     virtual void publishKeyframes( std::vector<FrameHessian*> &frames, bool final, CalibHessian* HCalib);
     virtual void publishCamPose(FrameShell* frame, CalibHessian* HCalib);
 
@@ -77,19 +89,26 @@ public:
     virtual bool needPushDepthImage();
 
 	virtual void join();
-
 	virtual void reset();
+
+	void readAll();
+	void publishFrameFromFile(FrameShell* frame, CalibHessian* HCalib, const char* depthFile);
+	void publishObject(FrameShell* frame, CalibHessian* HCalib, const char* modelFile);
+	void addObjCamConnection(const char* filename);
+
 private:
 
 	bool needReset;
 	void reset_internal();
 	void drawConstraints();
+	void saveAll();
+
 
 	boost::thread runThread;
 	bool running;
 	int w,h;
 
-
+	std::string dataDir;
 
 	// images rendering
 	boost::mutex openImagesMutex;
@@ -108,7 +127,9 @@ private:
 	std::map<int, KeyFrameDisplay*> keyframesByKFID;
 	std::vector<GraphConnection,Eigen::aligned_allocator<GraphConnection>> connections;
 
-
+	std::vector<KeyFrameDisplay*> objects;
+	std::map<int, KeyFrameDisplay*> objectsById;
+	std::vector<ObjCamConnection> objConnections;
 
 	// render settings
 	bool settings_showKFCameras;
@@ -117,12 +138,14 @@ private:
 	bool settings_showFullTrajectory;
 	bool settings_showActiveConstraints;
 	bool settings_showAllConstraints;
+	bool settings_showObjectConstraints;
 
 	float settings_scaledVarTH;
 	float settings_absVarTH;
 	int settings_pointCloudMode;
 	float settings_minRelBS;
 	int settings_sparsity;
+	int settings_skipframes;
 
 
 	// timings

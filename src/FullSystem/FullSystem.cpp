@@ -240,6 +240,10 @@ void FullSystem::setGammaFunction(float* BInv)
 	Hcalib.B[255] = 255;
 }
 
+CalibHessian* FullSystem::getHCalib()
+{
+	return &Hcalib;
+}
 
 
 void FullSystem::printResult(std::string file)
@@ -1176,6 +1180,10 @@ void FullSystem::makeKeyFrame( FrameHessian* fh)
 
     for(IOWrap::Output3DWrapper* ow : outputWrapper)
     {
+
+	    // printf( "\033[1;31;40m Output3DWarpper PublishGraph And publishKeyframes Called Here \033[0m\n" );
+   	 //    printf("\n");
+    	// printf("\n");
         ow->publishGraph(ef->connectivityMap);
         ow->publishKeyframes(frameHessians, false, &Hcalib);
     }

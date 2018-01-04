@@ -25,6 +25,7 @@
 
 #include <stdio.h>
 #include "util/settings.h"
+#include <boost/algorithm/string.hpp>
 
 //#include <GL/glx.h>
 //#include <GL/gl.h>
@@ -35,7 +36,8 @@
 #include "FullSystem/HessianBlocks.h"
 #include "FullSystem/ImmaturePoint.h"
 #include "util/FrameShell.h"
-
+#include<fstream>
+#include<iostream>
 
 
 namespace dso
@@ -47,8 +49,14 @@ namespace IOWrap
 KeyFrameDisplay::KeyFrameDisplay()
 {
 	originalInputSparse = 0;
-	numSparseBufferSize=0;
+	numSparseBufferSize = 0;
 	numSparsePoints=0;
+
+	numObjectSurfaces = 0;
+	numObjectPoints = 0;
+	allObjectPoints = 0;
+	allObjectSurfaces = 0;
+
 
 	id = 0;
 	active= true;
@@ -67,6 +75,7 @@ KeyFrameDisplay::KeyFrameDisplay()
 }
 void KeyFrameDisplay::setFromF(FrameShell* frame, CalibHessian* HCalib)
 {
+	incoming_id = frame->incoming_id;
 	id = frame->id;
 	fx = HCalib->fxl();
 	fy = HCalib->fyl();
@@ -171,6 +180,96 @@ KeyFrameDisplay::~KeyFrameDisplay()
 		delete[] originalInputSparse;
 }
 
+void KeyFrameDisplay::savePC(const char *filename){
+	std::ofstream outDepthFile;
+	outDepthFile.open(filename);
+	for(int i=0;i<numSparsePoints;i++){
+		if(originalInputSparse[i].idpeth<0) continue;
+		if(originalInputSparse[i].relObsBaseline < 1e-6) continue;
+		float inputU = originalInputSparse[i].u;
+		float inputV = originalInputSparse[i].v;
+		float depth = 1.0f / originalInputSparse[i].idpeth;
+		outDepthFile<<inputU<<" "<<inputV<<" "<<depth<<std::endl;		
+	}	
+	outDepthFile.close();
+}
+
+void KeyFrameDisplay::readObj(const char *filename){
+	std::ifstream inModelFile;
+	inModelFile.open(filename);
+
+	double scale;
+	inModelFile >> numObjectPoints >> numObjectSurfaces >> scale;
+
+	allObjectPoints = new ObjectPoint[numObjectPoints];
+	allObjectSurfaces = new ObjectSurface[numObjectSurfaces];
+
+    double x, y, z;
+    for(int i = 0; i < numObjectPoints; i++){
+		inModelFile >> x >> y >> z;
+		allObjectPoints[i].x = x / scale;
+		allObjectPoints[i].y = y / scale;
+		allObjectPoints[i].z = z / scale;
+    }
+
+    for(int i = 0; i < numObjectSurfaces; i++){
+    	inModelFile >> allObjectSurfaces[i].p1
+					>> allObjectSurfaces[i].p2
+					>> allObjectSurfaces[i].p3;
+    }
+
+	inModelFile.close();
+}
+
+void KeyFrameDisplay::readPC(const char* filename)
+{
+	std::ifstream inDepthFile;
+	inDepthFile.open(filename);
+
+	numSparsePoints = 0;
+
+	std::vector<std::string> alllines;
+	std::string sline;
+	while( getline(inDepthFile,sline) )
+	{
+		alllines.push_back(sline);
+	}
+
+	int npoints = alllines.size();
+
+	if(numSparseBufferSize < npoints)
+	{
+		if(originalInputSparse != 0) delete originalInputSparse;
+		numSparseBufferSize = npoints+100;
+		originalInputSparse = new InputPointSparse<MAX_RES_PER_POINT>[numSparseBufferSize];
+	}
+
+	InputPointSparse<MAX_RES_PER_POINT>* pc = originalInputSparse;
+
+	std::vector<std::string> strs;
+	for(int i = 0;i<alllines.size();i++){
+
+
+		boost::split(strs, alllines[i],boost::is_any_of(" "));
+		if(strs.size() != 3){
+			printf("Error in read depth file\n");
+		}
+
+		for(int j=0;j<patternNum;j++)
+			pc[i].color[j] = 255;
+		pc[i].u = atof(strs[0].c_str());
+		pc[i].v = atof(strs[1].c_str());
+		pc[i].idpeth = 1.0f / atof(strs[2].c_str());
+		pc[i].relObsBaseline = 1000;
+		pc[i].idepth_hessian = 10000;
+		pc[i].numGoodRes =  0;
+		pc[i].status = 1;
+		numSparsePoints++;
+	}
+
+	inDepthFile.close();
+}
+
 bool KeyFrameDisplay::refreshPC(bool canRefresh, float scaledTH, float absTH, int mode, float minBS, int sparsity)
 {
 	if(canRefresh)
@@ -200,6 +299,7 @@ bool KeyFrameDisplay::refreshPC(bool canRefresh, float scaledTH, float absTH, in
 	// make data
 	Vec3f* tmpVertexBuffer = new Vec3f[numSparsePoints*patternNum];
 	Vec3b* tmpColorBuffer = new Vec3b[numSparsePoints*patternNum];
+
 	int vertexBufferNumPoints=0;
 
 	for(int i=0;i<numSparsePoints;i++)
@@ -217,19 +317,22 @@ bool KeyFrameDisplay::refreshPC(bool canRefresh, float scaledTH, float absTH, in
 
 		if(originalInputSparse[i].idpeth < 0) continue;
 
-
 		float depth = 1.0f / originalInputSparse[i].idpeth;
 		float depth4 = depth*depth; depth4*= depth4;
 		float var = (1.0f / (originalInputSparse[i].idepth_hessian+0.01));
 
-		if(var * depth4 > my_scaledTH)
+		if(var * depth4 > my_scaledTH){
 			continue;
+		}
 
-		if(var > my_absTH)
+		if(var > my_absTH){
 			continue;
+		}
 
-		if(originalInputSparse[i].relObsBaseline < my_minRelBS)
+
+		if(originalInputSparse[i].relObsBaseline < my_minRelBS){
 			continue;
+		}
 
 
 		for(int pnt=0;pnt<patternNum;pnt++)
@@ -239,11 +342,10 @@ bool KeyFrameDisplay::refreshPC(bool canRefresh, float scaledTH, float absTH, in
 			int dx = patternP[pnt][0];
 			int dy = patternP[pnt][1];
 
+
 			tmpVertexBuffer[vertexBufferNumPoints][0] = ((originalInputSparse[i].u+dx)*fxi + cxi) * depth;
 			tmpVertexBuffer[vertexBufferNumPoints][1] = ((originalInputSparse[i].v+dy)*fyi + cyi) * depth;
 			tmpVertexBuffer[vertexBufferNumPoints][2] = depth*(1 + 2*fxi * (rand()/(float)RAND_MAX-0.5f));
-
-
 
 			if(my_displayMode==0)
 			{
@@ -285,6 +387,8 @@ bool KeyFrameDisplay::refreshPC(bool canRefresh, float scaledTH, float absTH, in
 				tmpColorBuffer[vertexBufferNumPoints][1] = originalInputSparse[i].color[pnt];
 				tmpColorBuffer[vertexBufferNumPoints][2] = originalInputSparse[i].color[pnt];
 			}
+
+
 			vertexBufferNumPoints++;
 
 
@@ -396,6 +500,40 @@ void KeyFrameDisplay::drawPC(float pointSize)
 		glDisableClientState(GL_COLOR_ARRAY);
 		colorBuffer.Unbind();
 
+	glPopMatrix();
+}
+
+void KeyFrameDisplay::drawObj(float lineWidth)
+{
+	if(width == 0)
+		return;
+
+	glPushMatrix();
+
+		Sophus::Matrix4f m = camToWorld.matrix().cast<float>();
+		glMultMatrixf((GLfloat*)m.data());
+
+		glColor3f(0,0,1);
+
+		glLineWidth(lineWidth);
+		glBegin(GL_LINES);
+		for(int i = 0; i < numObjectSurfaces; i++)
+		{
+			ObjectPoint p1 = allObjectPoints[allObjectSurfaces[i].p1];
+			ObjectPoint p2 = allObjectPoints[allObjectSurfaces[i].p2];
+			ObjectPoint p3 = allObjectPoints[allObjectSurfaces[i].p3];
+
+			glVertex3f(p1.x, p1.y, p1.z);
+			glVertex3f(p2.x, p2.y, p2.z);
+
+			glVertex3f(p1.x, p1.y, p1.z);
+			glVertex3f(p3.x, p3.y, p3.z);
+
+			glVertex3f(p2.x, p2.y, p2.z);
+			glVertex3f(p3.x, p3.y, p3.z);
+		}
+
+		glEnd();
 	glPopMatrix();
 }
 

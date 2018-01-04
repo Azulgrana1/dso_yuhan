@@ -54,6 +54,18 @@ struct InputPointSparse
 	unsigned char status;
 };
 
+struct ObjectPoint
+{
+	float x;
+	float y;
+	float z;
+};
+
+struct ObjectSurface
+{
+	int p1, p2, p3;
+};
+
 struct MyVertex
 {
 	float point[3];
@@ -83,8 +95,14 @@ public:
 	// renders cam & pointcloud.
 	void drawCam(float lineWidth = 1, float* color = 0, float sizeFactor=1);
 	void drawPC(float pointSize);
+	void savePC(const char *filename);
+	void readPC(const char *filename);
+	void readObj(const char *filename);
+
+	void drawObj(float lineWidth = 1);
 
 	int id;
+	int incoming_id;
 	bool active;
 	SE3 camToWorld;
 
@@ -110,6 +128,10 @@ private:
 	int numSparseBufferSize;
     InputPointSparse<MAX_RES_PER_POINT>* originalInputSparse;
 
+    int numObjectPoints;
+    int numObjectSurfaces;
+    ObjectPoint* allObjectPoints;
+    ObjectSurface* allObjectSurfaces;
 
 	bool bufferValid;
 	int numGLBufferPoints;

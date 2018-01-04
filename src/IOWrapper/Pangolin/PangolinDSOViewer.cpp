@@ -25,12 +25,17 @@
 
 #include "PangolinDSOViewer.h"
 #include "KeyFrameDisplay.h"
+#include <boost/algorithm/string.hpp>
 
 #include "util/settings.h"
 #include "util/globalCalib.h"
 #include "FullSystem/HessianBlocks.h"
 #include "FullSystem/FullSystem.h"
 #include "FullSystem/ImmaturePoint.h"
+#include <fstream>
+#include <iostream>
+#include <dirent.h>
+
 
 namespace dso
 {
@@ -45,6 +50,7 @@ PangolinDSOViewer::PangolinDSOViewer(int w, int h, bool startRunThread)
 	this->h = h;
 	running=true;
 
+	dataDir = "/home/wyw/lyh/data/slam";
 
 	{
 		boost::unique_lock<boost::mutex> lk(openImagesMutex);
@@ -78,6 +84,37 @@ PangolinDSOViewer::~PangolinDSOViewer()
 	runThread.join();
 }
 
+void PangolinDSOViewer::addObjCamConnection(const char* filename)
+{
+	std::ifstream objCamFile;
+	objCamFile.open(filename);
+
+	std::vector<std::string> alllines;
+	std::string sline;
+	while( getline(objCamFile,sline) )
+	{
+		alllines.push_back(sline);
+	}
+
+	int nConnections = alllines.size();
+
+	std::vector<std::string> strs;
+	for(int i = 0;i<alllines.size();i++){
+
+
+		boost::split(strs, alllines[i],boost::is_any_of(" "));
+		std::cout<<strs[0]<<' '<<strs[1]<<std::endl;
+		if(strs.size() < 2 || strs.size() > 3){
+			printf("Error in read obj-cam file\n");
+			exit(1);
+		}
+
+
+		objConnections.push_back(ObjCamConnection(atoi(strs[0].c_str()), atoi(strs[1].c_str()) ) );
+	}
+
+	objCamFile.close();
+}
 
 void PangolinDSOViewer::run()
 {
@@ -132,11 +169,12 @@ void PangolinDSOViewer::run()
 	pangolin::Var<bool> settings_showFullTrajectory("ui.FullTrajectory",false,true);
 	pangolin::Var<bool> settings_showActiveConstraints("ui.ActiveConst",true,true);
 	pangolin::Var<bool> settings_showAllConstraints("ui.AllConst",false,true);
+	pangolin::Var<bool> settings_showObjectConstraints("ui.ObjConst", true, true);
 
 
 	pangolin::Var<bool> settings_show3D("ui.show3D",true,true);
-	pangolin::Var<bool> settings_showLiveDepth("ui.showDepth",true,true);
-	pangolin::Var<bool> settings_showLiveVideo("ui.showVideo",true,true);
+	pangolin::Var<bool> settings_showLiveDepth("ui.showDepth",false,true);
+	pangolin::Var<bool> settings_showLiveVideo("ui.showVideo",false,true);
     pangolin::Var<bool> settings_showLiveResidual("ui.showResidual",false,true);
 
 	pangolin::Var<bool> settings_showFramesWindow("ui.showFramesWindow",false,true);
@@ -144,14 +182,15 @@ void PangolinDSOViewer::run()
 	pangolin::Var<bool> settings_showCoarseTracking("ui.showCoarseTracking",false,true);
 
 
-	pangolin::Var<int> settings_sparsity("ui.sparsity",1,1,20,false);
+	pangolin::Var<int> settings_sparsity("ui.sparsity",18,1,20,false);
+	pangolin::Var<int> settings_skipframes("ui.skipframes",0,0,100,false);
 	pangolin::Var<double> settings_scaledVarTH("ui.relVarTH",0.001,1e-10,1e10, true);
 	pangolin::Var<double> settings_absVarTH("ui.absVarTH",0.001,1e-10,1e10, true);
 	pangolin::Var<double> settings_minRelBS("ui.minRelativeBS",0.1,0,1, false);
 
 
 	pangolin::Var<bool> settings_resetButton("ui.Reset",false,false);
-
+    pangolin::Var<bool> settings_saveButton("ui.SaveAll",false,false);
 
 	pangolin::Var<int> settings_nPts("ui.activePoints",setting_desiredPointDensity, 50,5000, false);
 	pangolin::Var<int> settings_nCandidates("ui.pointCandidates",setting_desiredImmatureDensity, 50,5000, false);
@@ -176,8 +215,11 @@ void PangolinDSOViewer::run()
 			boost::unique_lock<boost::mutex> lk3d(model3DMutex);
 			//pangolin::glDrawColouredCube();
 			int refreshed=0;
+			int frameCount = 0;
 			for(KeyFrameDisplay* fh : keyframes)
 			{
+				frameCount++;
+				if(frameCount<this->settings_skipframes)continue;							
 				float blue[3] = {0,0,1};
 				if(this->settings_showKFCameras) fh->drawCam(1,blue,0.1);
 
@@ -186,7 +228,11 @@ void PangolinDSOViewer::run()
 						this->settings_pointCloudMode, this->settings_minRelBS, this->settings_sparsity));
 				fh->drawPC(1);
 			}
-			if(this->settings_showCurrentCamera) currentCam->drawCam(2,0,0.2);
+			for(KeyFrameDisplay* fh : objects)
+			{
+				fh->drawObj();
+			}
+			if(this->settings_showCurrentCamera) currentCam->drawCam(2,0,0.1);
 			drawConstraints();
 			lk3d.unlock();
 		}
@@ -251,6 +297,7 @@ void PangolinDSOViewer::run()
 	    this->settings_showKFCameras = settings_showKFCameras.Get();
 	    this->settings_showTrajectory = settings_showTrajectory.Get();
 	    this->settings_showFullTrajectory = settings_showFullTrajectory.Get();
+	    this->settings_showObjectConstraints = settings_showObjectConstraints.Get();
 
 		setting_render_display3D = settings_show3D.Get();
 		setting_render_displayDepth = settings_showLiveDepth.Get();
@@ -266,6 +313,8 @@ void PangolinDSOViewer::run()
 	    this->settings_scaledVarTH = settings_scaledVarTH.Get();
 	    this->settings_minRelBS = settings_minRelBS.Get();
 	    this->settings_sparsity = settings_sparsity.Get();
+	    this->settings_skipframes = settings_skipframes.Get();
+
 
 	    setting_desiredPointDensity = settings_nPts.Get();
 	    setting_desiredImmatureDensity = settings_nCandidates.Get();
@@ -279,6 +328,12 @@ void PangolinDSOViewer::run()
 	    	printf("RESET!\n");
 	    	settings_resetButton.Reset();
 	    	setting_fullResetRequested = true;
+	    }
+	    if(settings_saveButton.Get()){
+	    	//save All
+	    	printf("SAVE ALL!\n");
+	    	settings_saveButton.Reset();
+	    	saveAll();
 	    }
 
 		// Swap frames and Process Events
@@ -343,13 +398,13 @@ void PangolinDSOViewer::drawConstraints()
 		glBegin(GL_LINES);
 
 		glColor3f(0,1,0);
-		glBegin(GL_LINES);
+		glBegin(GL_LINES);		
 		for(unsigned int i=0;i<connections.size();i++)
 		{
 			if(connections[i].to == 0 || connections[i].from==0) continue;
 			int nAct = connections[i].bwdAct + connections[i].fwdAct;
 			int nMarg = connections[i].bwdMarg + connections[i].fwdMarg;
-			if(nAct==0 && nMarg>0  )
+			if(nAct==0 && nMarg>0)
 			{
 				Sophus::Vector3f t = connections[i].from->camToWorld.translation().cast<float>();
 				glVertex3f((GLfloat) t[0],(GLfloat) t[1], (GLfloat) t[2]);
@@ -412,20 +467,49 @@ void PangolinDSOViewer::drawConstraints()
 		}
 		glEnd();
 	}
+
+	if(settings_showObjectConstraints)
+	{
+		int objID;
+		int frameID;
+		bool objFound;
+		bool frameFound;
+
+		glColor3f(0, 1, 0);
+		glLineWidth(3);
+
+		glBegin(GL_LINES);
+		for(unsigned int i = 0; i < objConnections.size(); i++)
+		{
+			objID = objConnections[i].objID + 20000;
+			frameID = objConnections[i].frameID;
+			objFound = objectsById.count(objID);
+			frameFound = keyframesByKFID.count(frameID);
+
+			if(!objFound || !frameFound)
+				break;
+
+			Sophus::Vector3f t = keyframesByKFID[frameID]->camToWorld.translation().cast<float>();
+			glVertex3f((GLfloat) t[0],(GLfloat) t[1], (GLfloat) t[2]);
+			t = objectsById[objID]->camToWorld.translation().cast<float>();
+			glVertex3f((GLfloat) t[0],(GLfloat) t[1], (GLfloat) t[2]);
+		}
+		glEnd();
+	}
 }
 
 
 
 
-
-
-void PangolinDSOViewer::publishGraph(const std::map<uint64_t,Eigen::Vector2i> &connectivity)
+        
+void PangolinDSOViewer::publishGraph(const std::map<uint64_t,Eigen::Vector2i, std::less<uint64_t>, Eigen::aligned_allocator<std::pair<uint64_t, Eigen::Vector2i> > > &connectivity)
 {
     if(!setting_render_display3D) return;
     if(disableAllDisplay) return;
+    boost::unique_lock<boost::mutex> lk(model3DMutex);
+	//model3DMutex.lock();
+    connections.resize(connectivity.size());   
 
-	model3DMutex.lock();
-    connections.resize(connectivity.size());
 	int runningID=0;
 	int totalActFwd=0, totalActBwd=0, totalMargFwd=0, totalMargBwd=0;
     for(std::pair<uint64_t,Eigen::Vector2i> p : connectivity)
@@ -441,6 +525,7 @@ void PangolinDSOViewer::publishGraph(const std::map<uint64_t,Eigen::Vector2i> &c
 		}
 
 		if(host > target) continue;
+
 
 		connections[runningID].from = keyframesByKFID.count(host) == 0 ? 0 : keyframesByKFID[host];
 		connections[runningID].to = keyframesByKFID.count(target) == 0 ? 0 : keyframesByKFID[target];
@@ -461,7 +546,7 @@ void PangolinDSOViewer::publishGraph(const std::map<uint64_t,Eigen::Vector2i> &c
 	}
 
 
-	model3DMutex.unlock();
+	//model3DMutex.unlock();
 }
 void PangolinDSOViewer::publishKeyframes(
 		std::vector<FrameHessian*> &frames,
@@ -539,6 +624,241 @@ void PangolinDSOViewer::pushDepthImage(MinimalImageB3* image)
 
 	memcpy(internalKFImg->data, image->data, w*h*3);
 	kfImgChanged=true;
+}
+void PangolinDSOViewer::saveAll(){
+
+	printf("saveAll Pressed:\n");
+	//Step 1. Save all Keyframes
+	std::ofstream poseFile,pathFile;
+	char timeStruct[128];
+	char poseFileName[256];
+	char pathFileName[256];
+	char depthDir[256];		
+	time_t now_time;
+	tm * local;
+	now_time=time(NULL);
+	local = localtime(&now_time);
+	strftime(timeStruct, 128,"%Y-%m-%d-%H-%M", local);
+	sprintf(poseFileName,"%s/Pose-%s.txt",dataDir.c_str(), timeStruct);
+	sprintf(pathFileName,"%s/Path-%s.txt",dataDir.c_str(), timeStruct);
+	sprintf(depthDir,"%s/%s-Depth",dataDir.c_str(), timeStruct);
+
+	char sysCall[256];
+	sprintf(sysCall,"mkdir %s",depthDir);
+	system(sysCall);
+
+
+	printf("Pose of keyframes saved to%s\n",poseFileName);	
+	poseFile.open(poseFileName);
+	for(KeyFrameDisplay* fh : keyframes)
+	{
+		// save all constraints?
+		int fId = fh->id;
+		int nId = fh->incoming_id;
+		Sophus::Matrix4f m = fh->camToWorld.matrix().cast<float>();						
+		float camToWorldMat[16];
+		memcpy(camToWorldMat,m.data(),16*sizeof(float));
+		poseFile<<fh->id<<" ";
+		for(int j=0;j<16;j++){
+			poseFile<<camToWorldMat[j]<<" ";
+		}
+		poseFile<<std::endl;
+		char depthFileName[256];
+		sprintf(depthFileName,"%s/depth_%06d.txt",depthDir,fId);
+		fh->savePC(depthFileName);		
+	}
+	poseFile.close();	
+	printf("keyframe Poses saved\n");
+
+	// save all path
+
+	printf("Path of allframes saved to%s\n",pathFileName);	
+	pathFile.open(pathFileName);
+	for(unsigned int i=0;i<allFramePoses.size();i++)
+	{
+		pathFile<<i<<" ";
+		for(int j=0;j<3;j++){
+			pathFile<<allFramePoses[i][j]<<" ";
+		}
+		pathFile<<std::endl;
+	}
+	pathFile.close();	
+	printf("Path saved\n");
+	//Step 2. Save all Constraints
+
+	
+
+	std::ofstream edgeFile;
+	char edgeFileName[256];	
+	sprintf(edgeFileName,"%s/%s-EdgeFile.txt",dataDir.c_str(), timeStruct);
+	printf("Edges of Graph saved to:%s\n",edgeFileName);
+	edgeFile.open(edgeFileName);
+	for(unsigned int i=0;i<connections.size();i++)
+	{
+		if(connections[i].to == 0 || connections[i].from==0) continue;
+		int nAct = connections[i].bwdAct + connections[i].fwdAct;
+		int nMarg = connections[i].bwdMarg + connections[i].fwdMarg;
+		if(nAct==0 && nMarg>0)
+		{
+			edgeFile<<connections[i].from->id<<" "
+			        <<connections[i].to->id<<" "
+			        <<connections[i].fwdAct<<" "
+			        <<connections[i].bwdAct<<" "
+					<<connections[i].fwdMarg<<" "
+					<<connections[i].bwdMarg<<" "
+					<<std::endl;
+		}		
+	}
+	edgeFile.close();
+
+
+}
+
+void PangolinDSOViewer::readAll(){
+
+	printf("readAll Pressed:\n");
+
+	//Step 1. Save all Keyframes
+	std::ifstream poseFile,pathFile;
+	char poseFileName[256];
+	char pathFileName[256];
+	char depthDir[256];
+	char seq[30] = "10-25-1";
+
+	sprintf(poseFileName,"/home/wyw/lyh/data/test_seq/%s/pose.txt",seq);
+	sprintf(pathFileName,"/home/wyw/lyh/data/test_seq/%s/path.txt",seq);
+	sprintf(depthDir,"/home/wyw/lyh/data/test_seq/%s/depth",seq);
+
+	printf("Read from pose of keyframes %s\n",poseFileName);	
+	poseFile.open(poseFileName);
+
+	//read the number of items inside depth dir
+
+	std::vector<std::string> allDepthFileNames;
+
+	struct dirent *direntp;
+   	DIR *dirp = opendir(depthDir);
+ 
+   	if (dirp != NULL) {
+       	while ((direntp = readdir(dirp)) != NULL){
+           //printf("%s\n", direntp->d_name);
+           allDepthFileNames.push_back(direntp->d_name);
+       	}
+   	}
+   	closedir(dirp);
+
+    int nFrames = allDepthFileNames.size();
+
+
+    for(int i = 0; i<nFrames; i++){
+
+
+		KeyFrameDisplay* curKF = new KeyFrameDisplay;
+		keyframes.push_back(curKF);
+		
+
+		Sophus::Matrix4f m = curKF->camToWorld.matrix().cast<float>();						
+		float camToWorldMat[16];
+		
+
+		poseFile>>curKF->id;
+		for(int j=0;j<16;j++){
+			poseFile>>camToWorldMat[j];
+		}
+
+		memcpy(m.data(),camToWorldMat,16*sizeof(float));
+
+		curKF->readPC(allDepthFileNames[i].c_str());
+		//printf("number of keyframes: %d\n", keyframes.size());
+
+    }
+    poseFile.close();
+
+/* Don't need path and edges for now
+    //read all path
+    allFramePoses.resize(nFrames);
+
+	printf("Read from Path of allframes",pathFileName);	
+	pathFile.open(pathFileName);
+	for(unsigned int i=0;i<allFramePoses.size();i++)
+	{
+		int tmpi;
+		pathFile>>tmpi;
+		for(int j=0;j<3;j++){
+			pathFile>>allFramePoses[i][j];
+		}
+	}
+	pathFile.close();	
+	printf("Path read finished\n");
+
+
+	//read all edge file
+	std::ifstream edgeFile;
+	char edgeFileName[256];	
+	sprintf(edgeFileName,"/home/wyw/lyh/data/test_seq/%s-EdgeFile.txt",seq);
+	printf("Read Edges of Graph from:%s\n",edgeFileName);
+	edgeFile.open(edgeFileName);
+
+
+	std::vector<std::string> alllines;
+	std::string sline;
+    while( getline(edgeFile,sline) )
+    {    
+
+    	alllines.push_back(sline);
+
+    }
+
+
+
+    connections.resize(alllines.size());
+
+
+
+	for(unsigned int i=0;i<connections.size();i++){
+
+		std::vector<std::string> strs;
+		boost::split(strs,alllines[i],boost::is_any_of(" "));
+		
+		connections[i].from->id = atoi(strs[0].c_str());	
+		connections[i].to->id =  atoi(strs[1].c_str());	
+		connections[i].fwdAct =  atoi(strs[2].c_str());	
+		connections[i].bwdAct =  atoi(strs[3].c_str());	
+		connections[i].fwdMarg =  atoi(strs[4].c_str());	
+		connections[i].bwdMarg =  atoi(strs[5].c_str());
+					
+		
+				
+	}
+	edgeFile.close();
+*/
+
+}
+
+
+void PangolinDSOViewer::publishFrameFromFile(FrameShell* frame, CalibHessian* HCalib, const char* depthFile)
+{
+    if(!setting_render_display3D) return;
+    if(disableAllDisplay) return;
+
+	boost::unique_lock<boost::mutex> lk(model3DMutex);
+	KeyFrameDisplay* curKF =  new KeyFrameDisplay();
+	keyframes.push_back(curKF);
+	keyframesByKFID[frame->id] = curKF;
+	curKF->setFromF(frame, HCalib);
+	curKF->readPC(depthFile);
+}
+
+void PangolinDSOViewer::publishObject(FrameShell* frame, CalibHessian* HCalib, const char* modelFile){
+	if(!setting_render_display3D) return;
+	if(disableAllDisplay) return;
+	boost::unique_lock<boost::mutex> lk(model3DMutex);
+
+	KeyFrameDisplay* curKF =  new KeyFrameDisplay();
+	objects.push_back(curKF);
+	objectsById[frame->id] = curKF;
+	curKF->setFromF(frame, HCalib);
+	curKF->readObj(modelFile);
 }
 
 }

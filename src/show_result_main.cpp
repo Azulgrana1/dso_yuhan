@@ -24,6 +24,7 @@
 
 
 #include <thread>
+#include <chrono>
 #include <locale.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -39,6 +40,7 @@
 #include "util/globalFuncs.h"
 #include "util/DatasetReader.h"
 #include "util/globalCalib.h"
+#include "util/FrameShell.h"
 
 #include "util/NumType.h"
 #include "FullSystem/FullSystem.h"
@@ -50,15 +52,16 @@
 #include "IOWrapper/Pangolin/PangolinDSOViewer.h"
 #include "IOWrapper/OutputWrapper/SampleOutputWrapper.h"
 
-
+std::string datadir = "";
 std::string vignette = "";
 std::string gammaCalib = "";
 std::string source = "";
 std::string calib = "";
-
+std::string posefile = "";
 double rescale = 1;
 bool reverse = false;
 bool disableROS = false;
+bool containObject = false;
 int start=0;
 int end=100000;
 bool prefetch = false;
@@ -347,6 +350,21 @@ void parseArgument(char* arg)
 		return;
 	}
 
+    if(1==sscanf(arg, "datadir=%s", buf))
+    {
+        datadir = buf;
+        printf("loading pose and depth from: %s", datadir.c_str());
+        return;
+    }
+
+    if(1==sscanf(arg, "posefile=%s", buf))
+    {
+    	posefile = buf;
+    	printf("pose file name: %s", posefile.c_str());
+    	containObject = (posefile == "viewpose_g2o");
+    	return;
+    }
+
 	printf("could not parse argument \"%s\"!!!!\n", arg);
 }
 
@@ -397,11 +415,6 @@ int main( int argc, char** argv )
 
 
 
-
-    std::string datadir = source + "/..";
-    std::cout<<datadir<<std::endl; 
-
-
     IOWrap::PangolinDSOViewer* viewer = 0;
 	if(!disableAllDisplay)
     {
@@ -415,8 +428,97 @@ int main( int argc, char** argv )
         fullSystem->outputWrapper.push_back(new IOWrap::SampleOutputWrapper());
 
 
+    std::thread runthread([&]() {
+    	char threadName[20] = "READ";
 
+    	printf("[%s] Read pose and depth from file:\n", threadName);
+    	//Step 1. read all Keyframes
+    	std::ifstream poseFile,pathFile;
+    	char poseFileName[256];
+    	char pathFileName[256];
+    	char depthDir[256];
+    	char objCamFile[256];
 
+    	sprintf(poseFileName,"%s/%s.txt",datadir.c_str(), posefile.c_str());
+    	sprintf(depthDir,"%s/depth",datadir.c_str());
+    	sprintf(objCamFile, "%s/selImg.txt", datadir.c_str());
+
+    	printf("[%s] Read from pose of keyframes %s\n",threadName, poseFileName);
+    	poseFile.open(poseFileName);
+    	if(!poseFile)
+    	{
+    		printf("Error reading pose file!\n");
+    		exit(1);
+    	};
+
+    	//read the number of items inside depth dir
+
+    	std::vector<std::string> allDepthFileNames;
+
+    	struct dirent *direntp;
+    	DIR *dirp = opendir(depthDir);
+
+    	if (dirp != NULL) {
+    		while ((direntp = readdir(dirp)) != NULL){
+    			allDepthFileNames.push_back(direntp->d_name);
+    		}
+    	}
+    	closedir(dirp);
+
+    	int nFrames = allDepthFileNames.size();
+
+       	CalibHessian* HCalib = fullSystem->getHCalib();
+        FrameShell* frame = new FrameShell();
+        Sophus::Matrix4d m;
+
+        double camToWorldMat[16];
+        char depthFullPath[256];
+        char objFullPath[256];
+        bool isObjKeyFrame = false;
+        bool isObject = false;
+
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        viewer->addObjCamConnection(objCamFile);
+    	//for(int i = 2; i<nFrames; i++){ // Start from 2 to skip . and ..
+        int i = 1;
+        while(!poseFile.eof()){
+        	i++;
+    		if(containObject)
+    			poseFile>>isObjKeyFrame;
+
+    		poseFile>>frame->id;
+    		frame->incoming_id = i-2;
+
+    		isObject = (frame->id >= 20000); // && isObjKeyFrame;
+
+    		for(int j=0;j<16;j++){
+    			poseFile>>camToWorldMat[j];
+    		}
+
+    		memcpy(m.data(),camToWorldMat,16*sizeof(double));
+    		frame->camToWorld = SE3(m);
+
+    		sprintf(depthFullPath, "%s/depth_%06d.txt", depthDir, frame->id);
+
+    		if(!isObject){
+    			viewer->publishCamPose(frame, HCalib);
+    			viewer->publishFrameFromFile(frame, HCalib, depthFullPath);
+    		}
+    		else{
+    			sprintf(objFullPath, "%s/model/model_%d.txt", datadir.c_str(), frame->id);
+    			viewer->publishObject(frame, HCalib, objFullPath);
+    		}
+
+    		if(i < 4)
+    			std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+    		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    	}
+    	poseFile.close();
+
+    });
+
+/* Don't need dso for now
     // to make MacOS happy: run this in dedicated thread -- and use this one to run the GUI.
     std::thread runthread([&]() {
         std::vector<int> idsToPlay;
@@ -564,10 +666,12 @@ int main( int argc, char** argv )
         }
 
     });
+    */
 
 
     if(viewer != 0)
-        viewer->run();
+    	viewer->run();
+
 
     runthread.join();
 
@@ -576,6 +680,8 @@ int main( int argc, char** argv )
 		ow->join();
 		delete ow;
 	}
+
+
 
 
 
